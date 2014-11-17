@@ -7,7 +7,14 @@
 
 #include <sqlite3.h>
 
+#include <boost/filesystem.hpp>
+
 #include "osquery/database/results.h"
+
+#ifndef STR
+#define STR_OF(x) #x
+#define STR(x) STR_OF(x)
+#endif
 
 namespace osquery {
 
@@ -15,8 +22,18 @@ namespace osquery {
  * @brief The version of osquery
  */
 extern const std::string kVersion;
+
 /// Use a macro for the version literal, set the kVersion symbol in the library.
-#define VERSION "1.0.3"
+#define OSQUERY_VERSION STR(OSQUERY_BUILD_VERSION)
+
+/**
+ * @brief A helpful tool type to report when logging, print help, or debugging.
+ */
+enum osqueryTool {
+  OSQUERY_TOOL_SHELL,
+  OSQUERY_TOOL_DAEMON,
+  OSQUERY_TOOL_TEST,
+};
 
 /**
  * @brief Execute a query
@@ -81,7 +98,7 @@ sqlite3* createDB();
  * @param argc the number of elements in argv
  * @param argv the command-line arguments passed to `main()`
  */
-void initOsquery(int argc, char* argv[]);
+void initOsquery(int argc, char* argv[], int tool = OSQUERY_TOOL_TEST);
 
 /**
  * @brief Split a given string based on an optional deliminator.
@@ -105,6 +122,13 @@ std::vector<std::string> split(const std::string& s,
 std::string getHostname();
 
 /**
+ * @brief generate a uuid to uniquely identify this machine
+ *
+ * @return uuid string to identify this machine
+ */
+std::string generateHostUuid();
+
+/**
  * @brief Getter for the current time, in a human-readable format.
  *
  * @return the current date/time in the format: "Wed Sep 21 10:27:52 2011"
@@ -117,4 +141,45 @@ std::string getAsciiTime();
  * @return an int representing the amount of seconds since the unix epoch
  */
 int getUnixTime();
+
+/**
+ * @brief Return a vector of all home directories on the system
+ *
+ * @return a vector of strings representing the path of all home directories
+ */
+std::vector<boost::filesystem::path> getHomeDirectories();
+}
+
+/**
+ * @brief Inline helper function for use with utf8StringSize
+ */
+template <typename _Iterator1, typename _Iterator2>
+inline size_t incUtf8StringIterator(_Iterator1& it, const _Iterator2& last) {
+  if (it == last)
+    return 0;
+  unsigned char c;
+  size_t res = 1;
+  for (++it; last != it; ++it, ++res) {
+    c = *it;
+    if (!(c & 0x80) || ((c & 0xC0) == 0xC0))
+      break;
+  }
+
+  return res;
+}
+
+/**
+ * @brief Get the length of a UTF-8 string
+ *
+ * @param str The UTF-8 string
+ *
+ * @return the length of the string
+ */
+inline size_t utf8StringSize(const std::string& str) {
+  size_t res = 0;
+  std::string::const_iterator it = str.begin();
+  for (; it != str.end(); incUtf8StringIterator(it, str.end()))
+    res++;
+
+  return res;
 }

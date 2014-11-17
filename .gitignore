@@ -3,6 +3,7 @@
 *.lo
 *.o
 *.obj
+*.pyc
 
 # Compiled Dynamic libraries
 *.so
@@ -21,6 +22,7 @@
 *.app
 
 # Build Artifacts
+.provision
 build/
 
 # Run Artifacts
@@ -45,3 +47,7 @@ build/
 # Doxygen Documentation
 doxygen/html
 doxygen/latex
+
+# Editors
+*~
+\#*\#

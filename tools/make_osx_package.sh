@@ -8,14 +8,15 @@ export PATH="$PATH:/usr/local/bin"
 source $SCRIPT_DIR/lib.sh
 
 APP_IDENTIFIER="com.facebook.osqueryd"
-APP_VERSION="0.0.2"
 OUTPUT_PKG_PATH="$SCRIPT_DIR/../osqueryd.pkg"
 LAUNCHD_PATH="$SCRIPT_DIR/$APP_IDENTIFIER.plist"
+LAUNCHD_PATH_OVERRIDE=""
 LAUNCHD_INSTALL_PATH="/Library/LaunchDaemons/$APP_IDENTIFIER.plist"
 OSQUERY_LOG_DIR="/var/log/osquery/"
 OSQUERY_CONFIG_PATH_DEST="/var/osquery/osquery.conf"
 OSQUERY_CONFIG_PATH_SOURCE=""
 
+APP_VERSION=`git describe --tags HEAD`
 
 BREW_PACKAGES=(rocksdb boost gflags glog thrift)
 BREW_PREFIX=`brew --prefix`
@@ -50,6 +51,9 @@ function parse_args() {
       -c | --config )         shift
                               OSQUERY_CONFIG_PATH_SRC=$1
                               ;;
+      -l | --launchd )        shift
+                              LAUNCHD_PATH_OVERRIDE=$1
+                              ;;
       -h | --help )           usage
                               ;;
       * )                     usage
@@ -60,10 +64,17 @@ function parse_args() {
 
 function check_parsed_args() {
   if [[ $OSQUERY_CONFIG_PATH_SRC = "" ]]; then
-    usage
+    log "no config specified. assuming that you know what you're doing."
   fi
 
-  if [[ ! -f $OSQUERY_CONFIG_PATH_SRC ]]; then
+  if [[ $LAUNCHD_PATH_OVERRIDE = "" ]]; then
+    log "no custom launchd path was defined. using $LAUNCHD_PATH"
+  else
+    LAUNCHD_PATH=$LAUNCHD_PATH_OVERRIDE
+    log "using $LAUNCHD_PATH as the launchd path"
+  fi
+
+  if [ "$OSQUERY_CONFIG_PATH_SRC" != "" ] && [ ! -f $OSQUERY_CONFIG_PATH_SRC ]; then
     log "$OSQUERY_CONFIG_PATH_SRC is not a file"
     usage
   fi
@@ -92,23 +103,28 @@ function main() {
   for package in ${BREW_PACKAGES[*]}; do
     for dep in `brew deps $package`; do
       if ! contains_element $dep "${dependency_list[@]}"; then
-        dependency_list+=($dep)
+        if [[ "$dep" != "openssl" ]]; then
+          dependency_list+=($dep)
+        fi
       fi
     done
   done
 
   log "copying dependencies"
   for dep in ${dependency_list[*]}; do
-    dep_dir=`brew info $dep | grep Cellar | awk '{print $1}'`
+    dep_dir=`brew info $dep | grep Cellar | grep '*' | awk '{print $1}'`
     brew unlink $dep 2>&1  1>/dev/null
     links=`brew link --dry-run $dep`
     brew link --overwrite $dep 2>&1  1>/dev/null
     echo "    - $dep ($dep_dir)"
     mkdir -p $INSTALL_PREFIX`dirname $dep_dir`
     cp -r $dep_dir $INSTALL_PREFIX`dirname $dep_dir`
+    mkdir -p "$INSTALL_PREFIX$BREW_PREFIX/Library/Formula"
+    cp "$BREW_PREFIX/Library/Formula/$dep.rb" "$INSTALL_PREFIX$BREW_PREFIX/Library/Formula/$dep.rb"
     for link in $links; do
       if [[ $link = $BREW_PREFIX* ]]; then
         target="`dirname $link`/`ls -l $link | awk '{print $11}'`"
+        echo "if [ ! -e `dirname $link` ]; then rm -f `dirname $link`; fi" >> $POSTINSTALL
         echo "mkdir -p `dirname $link`" >> $POSTINSTALL
         echo "rm -rf $link" >> $POSTINSTALL
         echo "ln -s $target $link" >> $POSTINSTALL
@@ -124,7 +140,9 @@ function main() {
   cp $SCRIPT_DIR/../build/darwin/osquery/osqueryd $BINARY_INSTALL_DIR
   mkdir -p $INSTALL_PREFIX/$OSQUERY_LOG_DIR
   mkdir -p `dirname $INSTALL_PREFIX$OSQUERY_CONFIG_PATH_DEST`
-  cp $OSQUERY_CONFIG_PATH_SRC $INSTALL_PREFIX$OSQUERY_CONFIG_PATH_DEST
+  if [[ "$OSQUERY_CONFIG_PATH_SRC" != "" ]]; then
+    cp $OSQUERY_CONFIG_PATH_SRC $INSTALL_PREFIX$OSQUERY_CONFIG_PATH_DEST
+  fi
 
   log "copying osquery configurations"
   mkdir -p `dirname $INSTALL_PREFIX$LAUNCHD_INSTALL_PATH`

@@ -3,6 +3,7 @@
 set -e
 
 SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+BUILD_DIR="$SCRIPT_DIR/../build"
 WORKING_DIR="$SCRIPT_DIR/../.sources"
 export PATH="$PATH:/usr/local/bin"
 
@@ -232,19 +233,60 @@ function package() {
   fi
 }
 
-function main() {
+function check() {
   platform OS
 
+  if [[ $OS = "darwin" ]]; then
+    HASH=`shasum $0 | awk '{print $1}'`
+  else
+    HASH=`sha1sum $0 | awk '{print $1}'`
+  fi
+
+  if [[ "$1" = "build" ]]; then
+    echo $HASH > "$2/.provision"
+    if [[ ! -z "$SUDO_USER" ]]; then
+      chown $SUDO_USER "$2/.provision"
+    fi
+    return
+  elif [[ ! "$1" = "check" ]]; then
+    return
+  fi
+
+  if [[ "$#" < 2 ]]; then
+    echo "Usage: $0 (check|build) BUILD_PATH"
+    exit 1
+  fi
+
+  CHECKPOINT=`cat $2/.provision 2>&1 &`
+  if [[ ! $HASH = $CHECKPOINT ]]; then
+    echo "Requested dependencies have changed, run: sudo make deps"
+    exit 1
+  fi
+  exit 0
+}
+
+function main() {
+  platform OS
+  distro $OS DISTRO
+
+  if [[ $1 = "get_platform" ]]; then
+    echo "$OS;$DISTRO"
+    return 0
+  fi
+
   mkdir -p "$WORKING_DIR"
+  if [[ ! -z "$SUDO_USER" ]]; then
+    chown -R $SUDO_USER "$BUILD_DIR"
+    chown -R $SUDO_USER "$WORKING_DIR"
+  fi
   cd "$WORKING_DIR"
 
   if [[ $OS = "centos" ]]; then
-    log "detected centos"
+    log "detected centos ($DISTRO)"
   elif [[ $OS = "ubuntu" ]]; then
-    log "detected ubuntu"
-    DISTRO=`cat /etc/*-release | grep DISTRIB_CODENAME | awk '{split($0,bits,"="); print bits[2]}'`
+    log "detected ubuntu ($DISTRO)"
   elif [[ $OS = "darwin" ]]; then
-    log "detected mac os x"
+    log "detected mac os x ($DISTRO)"
   else
     fatal "could not detect the current operating system. exiting."
   fi
@@ -277,6 +319,10 @@ function main() {
     package clang-3.4
     package clang-format-3.4
     package librpm-dev
+    package libudev-dev
+    package libblkid-dev
+    package linux-headers-generic
+
     set_cc clang
     set_cxx clang++
 
@@ -315,7 +361,10 @@ function main() {
 
   elif [[ $OS = "centos" ]]; then
     sudo yum update -y
-
+    
+    if [[ -z $(rpm -qa | grep 'kernel-headers-3.10.0-123.9.3.el7.x86_64') ]]; then
+      sudo rpm -iv ftp://rpmfind.net/linux/centos/7.0.1406/updates/x86_64/Packages/kernel-headers-3.10.0-123.9.3.el7.x86_64.rpm
+    fi
     package git-all
     package unzip
     package xz
@@ -326,7 +375,7 @@ function main() {
 
     pushd /etc/yum.repos.d
     if [[ ! -f /etc/yum.repos.d/devtools-2.repo ]]; then
-      wget http://people.centos.org/tru/devtools-2/devtools-2.repo
+      sudo wget http://people.centos.org/tru/devtools-2/devtools-2.repo
     fi
 
     package devtoolset-2-gcc
@@ -337,16 +386,16 @@ function main() {
     export CXX=/opt/rh/devtoolset-2/root/usr/bin/c++
     source /opt/rh/devtoolset-2/enable
     if [[ ! -d /usr/lib/gcc ]]; then
-      ln -s /opt/rh/devtoolset-2/root/usr/lib/gcc /usr/lib/
+      sudo ln -s /opt/rh/devtoolset-2/root/usr/lib/gcc /usr/lib/
     fi
     popd
 
     package cmake28
     if [[ ! -f /usr/bin/cmake ]]; then
-      ln -s /usr/bin/cmake28 /usr/bin/cmake
+      sudo ln -s /usr/bin/cmake28 /usr/bin/cmake
     fi
     if [[ ! -f /usr/bin/ccmake ]]; then
-      ln -s /usr/bin/ccmake28 /usr/bin/ccmake
+      sudo ln -s /usr/bin/ccmake28 /usr/bin/ccmake
     fi
 
     package clang
@@ -361,6 +410,7 @@ function main() {
     package readline-devel
     package procps-devel
     package rpm-devel
+    package libblkid-devel
 
     install_boost
     install_gflags
@@ -373,9 +423,8 @@ function main() {
     package bison
     package libunwind
     package libunwind-devel
+    package libudev-devel
 
-    # One day, CentOS packages will be updated and installing from yum will not fuck things up
-    # Until that day comes, leave these lines commented and keep installing from source
     # package libtool.x86_64
     # package boost.x86_64
 
@@ -389,8 +438,11 @@ function main() {
 
   elif [[ $OS = "darwin" ]]; then
     type brew >/dev/null 2>&1 || {
-      echo >&2 "could not find homebrew. please install it from http://brew.sh/";
-      exit 1;
+      fatal "could not find homebrew. please install it from http://brew.sh/";
+    }
+
+    type pip >/dev/null 2>&1 || {
+      fatal "could not find pip. please install it using 'sudo easy_install pip'";
     }
 
     brew update
@@ -409,4 +461,5 @@ function main() {
   git submodule update
 }
 
-main
+check $1 $2
+main $1

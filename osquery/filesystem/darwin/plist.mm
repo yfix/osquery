@@ -4,6 +4,7 @@
 
 #include <sstream>
 
+#include <boost/filesystem/path.hpp>
 #include <boost/property_tree/json_parser.hpp>
 
 #include <glog/logging.h>
@@ -32,7 +33,9 @@ NSMutableDictionary* filterDictionary(id dataStructure) {
         [result setObject:filterDictionary([dataStructure objectForKey:key])
                    forKey:key];
       } else if ([className isEqualToString:@"__NSCFData"]) {
-        [result setObject:@"NSData" forKey:key];
+        id data = [dataStructure objectForKey:key];
+        NSString* dataString = [[NSString alloc] initWithBytes:[data bytes] length:[data length] encoding:NSASCIIStringEncoding];
+        [result setObject:dataString forKey:key];
       } else {
         [result setObject:[dataStructure objectForKey:key] forKey:key];
       }
@@ -53,7 +56,9 @@ NSMutableArray* filterArray(id dataStructure) {
                  [className isEqualToString:@"__NSCFArray"]) {
         [result addObject:filterArray(value)];
       } else if ([className isEqualToString:@"__NSCFData"]) {
-        [result addObject:@"NSData"];
+        id data = [dataStructure objectForKey:value];
+        NSString* dataString = [[NSString alloc] initWithBytes:[data bytes] length:[data length] encoding:NSASCIIStringEncoding];
+        [result addObject:dataString];
       } else {
         [result addObject:value];
       }
@@ -115,7 +120,7 @@ Status parsePlistContent(const std::string& fileContent, pt::ptree& tree) {
       plist = filterPlist(plist);
     } catch (const std::exception& e) {
       LOG(ERROR)
-          << "An exception occured while filtering the plist: " << e.what();
+          << "An exception occurred while filtering the plist: " << e.what();
       statusCode = 1;
       statusString = e.what();
       goto cleanup;
@@ -156,7 +161,7 @@ Status parsePlistContent(const std::string& fileContent, pt::ptree& tree) {
   }
 }
 
-Status parsePlist(const std::string& path, pt::ptree& tree) {
+Status parsePlist(const boost::filesystem::path& path, pt::ptree& tree) {
   std::string fileContent;
   Status s = readFile(path, fileContent);
   if (!s.ok()) {

@@ -84,9 +84,10 @@ std::map<std::string, std::string> proc_env(const proc_t* proc_info) {
   std::map<std::string, std::string> env;
   std::string attr = osquery::tables::proc_attr("environ", proc_info);
   std::string buf;
+
   std::ifstream fd(attr, std::ios::in | std::ios::binary);
 
-  while (!fd.eof()) {
+  while (!(fd.fail() || fd.eof())) {
     std::getline(fd, buf, '\0');
     size_t idx = buf.find_first_of("=");
 
@@ -129,6 +130,10 @@ QueryData genProcesses() {
     Row r;
 
     r["pid"] = boost::lexical_cast<std::string>(proc_info->tid);
+    r["uid"] = boost::lexical_cast<std::string>((unsigned int)proc_info->ruid);
+    r["gid"] = boost::lexical_cast<std::string>((unsigned int)proc_info->rgid);
+    r["euid"] = boost::lexical_cast<std::string>((unsigned int)proc_info->euid);
+    r["egid"] = boost::lexical_cast<std::string>((unsigned int)proc_info->egid);
     r["name"] = proc_name(proc_info);
     r["cmdline"] = proc_cmdline(proc_info);
     r["path"] = proc_link(proc_info);
@@ -142,7 +147,11 @@ QueryData genProcesses() {
     r["parent"] = boost::lexical_cast<std::string>(proc_info->ppid);
 
     results.push_back(r);
+#ifdef PROC_EDITCMDLCVT
+    freeproc(proc_info);
+#else
     standard_freeproc(proc_info);
+#endif
   }
 
   closeproc(proc);

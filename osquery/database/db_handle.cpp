@@ -45,10 +45,13 @@ DBHandle::DBHandle(const std::string& path, bool in_memory) {
   options_.create_missing_column_families = true;
 
   if (in_memory) {
-    // Remove when upgrading to RocksDB 3.2
-    // Replace with:
+    // Remove when upgrading to RocksDB 3.3
     // options_.env = rocksdb::NewMemEnv(rocksdb::Env::Default());
-    throw std::domain_error("Requires RocksDB 3.3 https://fburl.com/27350299");
+    throw std::domain_error("Required RocksDB 3.3 (and setMemEnv)");
+  }
+
+  if (pathExists(path).ok() && !isWritable(path).ok()) {
+    throw std::domain_error("Cannot write to RocksDB path: " + path);
   }
 
   column_families_.push_back(rocksdb::ColumnFamilyDescriptor(
@@ -59,26 +62,15 @@ DBHandle::DBHandle(const std::string& path, bool in_memory) {
         cf_name, rocksdb::ColumnFamilyOptions()));
   }
 
-  if (pathExists(path).ok() && !isWritable(path).ok()) {
-    throw std::domain_error("Cannot write to RocksDB path: " + path);
-  }
-
   status_ =
       rocksdb::DB::Open(options_, path, column_families_, &handles_, &db_);
 }
 
 DBHandle::~DBHandle() {
-  DLOG(INFO) << "DBHandle::~DBHandle()";
   for (auto handle : handles_) {
-    if (handle != nullptr) {
-      delete handle;
-      handle = nullptr;
-    }
+    delete handle;
   }
-  if (db_ != nullptr) {
-    delete db_;
-    db_ = nullptr;
-  }
+  delete db_;
 }
 
 /////////////////////////////////////////////////////////////////////////////
@@ -89,8 +81,6 @@ std::shared_ptr<DBHandle> DBHandle::getInstance() {
 }
 
 std::shared_ptr<DBHandle> DBHandle::getInstanceInMemory() {
-  // Remove when upgrading to RocksDB 3.3
-  throw std::domain_error("Requires RocksDB 3.3 https://fburl.com/27350299");
   return getInstance("", true);
 }
 

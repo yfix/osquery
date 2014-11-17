@@ -1,8 +1,6 @@
 osquery
 =======
 
-<a target="_blank" href="https://magnum.travis-ci.com/facebook/osquery"><img src="https://magnum.travis-ci.com/facebook/osquery.svg?token=MvaZkzWisgsA98PZfNC7&branch=master"></a>
-
 osquery is an operating system instrumentation framework for OSX and Linux. osquery makes low-level operating system analytics and monitoring both performant and intuitive.
 
 osquery exposes an operating system as a high-performance relational database. This allows you to write SQL-based queries to explore operating system data. With osquery, SQL tables represent abstract concepts such as
@@ -17,34 +15,35 @@ To best understand the expressiveness that is afforded to you by osquery, consid
 
 ```sql
 --------------------------------------------------------
--- get the name, pid and attached port of all processes 
+-- get the name, pid and attached port of all processes
 -- which are listening on all interfaces
 --------------------------------------------------------
-SELECT DISTINCT 
-  process.name, 
-  listening.port, 
+SELECT DISTINCT
+  process.name,
+  listening.port,
   process.pid
 FROM processes AS process
 JOIN listening_ports AS listening
 ON process.pid = listening.pid
 WHERE listening.address = '0.0.0.0';
 ```
+
 ```sql
 --------------------------------------------------------
--- find every launchdaemon on an OS X host which 
---   * launches an executable when the operating 
+-- find every launchdaemon on an OS X host which
+--   * launches an executable when the operating
 --     system starts
---   * keeps the executable running 
--- return the name of the launchdaemon and the full 
+--   * keeps the executable running
+-- return the name of the launchdaemon and the full
 -- path (with arguments) of the executable to be ran.
 --------------------------------------------------------
-SELECT 
-  name, 
-  program || program_arguments AS executable 
-FROM launchd 
-WHERE 
-  (run_at_load = 'true' AND keep_alive = 'true') 
-AND 
+SELECT
+  name,
+  program || program_arguments AS executable
+FROM launchd
+WHERE
+  (run_at_load = 'true' AND keep_alive = 'true')
+AND
   (program != '' OR program_arguments != '');
 ```
 
@@ -55,7 +54,29 @@ These queries can be:
 
 ## Install
 
-Build and installation instructions are available in the [wiki](https://github.com/facebook/osquery/wiki/building-the-code).
+### OS X
+
+The easiest way to install osquery on OS X is via Homebrew. Check the [Homebrew](http://brew.sh/) homepage for installation instructions.
+
+Run the following:
+
+```
+brew update
+brew install osquery
+```
+
+To update osquery:
+
+```
+brew update
+brew upgrade osquery
+```
+
+### Linux
+
+We don't currently supply pre-built osquery packages for Linux. We do, however, provide Vagrant VMs which allow you to easily create packages for Ubuntu 12.04+ and CentOS 6.5. Check out the wiki's [installation guide](https://github.com/facebook/osquery/wiki/install-linux) for more information.
+
+If you're trying to build osquery on a different, currently unsupported operating system, please refer to the [building the code guide](https://github.com/facebook/osquery/wiki/building-the-code) for help.
 
 ## Learn more
 

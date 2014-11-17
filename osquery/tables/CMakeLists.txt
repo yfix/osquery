@@ -23,6 +23,7 @@ if(APPLE)
     system/darwin/nvram.cpp
     system/darwin/processes.cpp
     system/darwin/quarantine.cpp
+    system/darwin/startup_items.cpp
   )
 
   ADD_OSQUERY_LINK("-framework Foundation")
@@ -34,11 +35,15 @@ else()
   ADD_OSQUERY_LIBRARY(osquery_tables_linux
     events/linux/passwd_changes.cpp
     networking/linux/routes.cpp
+    networking/linux/socket_inode.cpp
+    networking/linux/port_inode.cpp
     system/linux/kernel_modules.cpp
     system/linux/processes.cpp
     system/linux/users.cpp
     system/linux/groups.cpp
     system/linux/mounts.cpp
+    system/linux/pci_devices.cpp
+    system/linux/block_devices.cpp
   )
 
   # CentOS specific tables

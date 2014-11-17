@@ -8,6 +8,7 @@
 #include <vector>
 
 #include <boost/property_tree/ptree.hpp>
+#include <boost/lexical_cast.hpp>
 
 #include "osquery/status.h"
 
@@ -18,12 +19,31 @@ namespace osquery {
 /////////////////////////////////////////////////////////////////////////////
 
 /**
+ * @brief The SQLite type affinities are available as macros
+ *
+ * Type affinities: TEXT, INTEGER, BIGINT
+ *
+ * You can represent any data that can be lexically casted to a string.
+ * Using the type affinity names helps table developers understand the data
+ * types they are storing, and more importantly how they are treated at query
+ * time.
+ */
+#define TEXT(x) std::string(x)
+#define INTEGER(x) boost::lexical_cast<std::string>(x)
+#define BIGINT(x) boost::lexical_cast<std::string>(x)
+
+/**
+ * @brief A variant type for the SQLite type affinities.
+ */
+typedef std::string RowData;
+
+/**
  * @brief A single row from a database query
  *
  * Row is a simple map where individual column names are keys, which map to
  * the Row's respective value
  */
-typedef std::map<std::string, std::string> Row;
+typedef std::map<std::string, RowData> Row;
 
 /**
  * @brief Serialize a Row into a property tree
@@ -248,8 +268,9 @@ struct ScheduledQueryLogItem {
   /// The name of the scheduled query
   std::string name;
 
-  /// The hostname of the host which the scheduled query was executed on
-  std::string hostname;
+  /// The identifier (hostname, or uuid) of the host on which the query was
+  /// executed
+  std::string hostIdentifier;
 
   /// The time that the query was executed, in unix time
   int unixTime;
@@ -323,4 +344,20 @@ Status serializeScheduledQueryLogItemAsEvents(
  */
 Status serializeScheduledQueryLogItemAsEventsJSON(
     const ScheduledQueryLogItem& i, std::string& json);
+
+/**
+ * @brief Add a Row to a QueryData if the Row hasn't appeared in the QueryData
+ * already
+ *
+ * Note that this function will iterate through the QueryData list until a
+ * given Row is found (or not found). This shouldn't be that significant of an
+ * overhead for most use-cases, but it's worth keeping in mind before you use
+ * this in it's current state.
+ *
+ * @param q the QueryData list to append to
+ * @param r the Row to add to q
+ *
+ * @return true if the Row was added to the QueryData, false if it wasn't
+ */
+bool addUniqueRowToQueryData(QueryData& q, const Row& r);
 }

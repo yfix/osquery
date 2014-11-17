@@ -9,6 +9,7 @@
 #include <sys/socket.h>
 #include <netinet/in.h>
 #include <arpa/inet.h>
+#include <unistd.h>
 
 #include <sys/types.h>
 #include <sys/sysctl.h>
@@ -18,6 +19,7 @@
 #include <boost/filesystem/operations.hpp>
 #include <boost/filesystem/path.hpp>
 #include <boost/lexical_cast.hpp>
+#include <boost/algorithm/string.hpp>
 
 #include <glog/logging.h>
 
@@ -25,7 +27,7 @@
 #include "osquery/database.h"
 #include "osquery/filesystem.h"
 
-#define IPv6_2_IPv4(v6) (((uint8_t *)((struct in6_addr *)v6)->s6_addr)+12)
+#define IPv6_2_IPv4(v6) (((uint8_t *)((struct in6_addr *)v6)->s6_addr) + 12)
 
 namespace osquery {
 namespace tables {
@@ -34,20 +36,20 @@ std::unordered_set<int> getProcList() {
   std::unordered_set<int> pidlist;
   int bufsize = proc_listpids(PROC_ALL_PIDS, 0, NULL, 0);
   if (bufsize <= 0) {
-    LOG(ERROR) << "An error occured retrieving the process list";
+    LOG(ERROR) << "An error occurred retrieving the process list";
     return pidlist;
   }
 
   // arbitrarily create a list with 2x capacity in case more processes have
   // been loaded since the last proc_listpids was executed
-  pid_t pids[2 * bufsize/sizeof(pid_t)];
+  pid_t pids[2 * bufsize / sizeof(pid_t)];
 
   // now that we've allocated "pids", let's overwrite num_pids with the actual
   // amount of data that was returned for proc_listpids when we populate the
   // pids data structure
   bufsize = proc_listpids(PROC_ALL_PIDS, 0, pids, sizeof(pids));
   if (bufsize <= 0) {
-    LOG(ERROR) << "An error occured retrieving the process list";
+    LOG(ERROR) << "An error occurred retrieving the process list";
     return pidlist;
   }
 
@@ -64,13 +66,13 @@ std::unordered_set<int> getProcList() {
   return pidlist;
 }
 
-std::unordered_map<int, int> getParentMap(std::unordered_set<int> & pidlist) {
+std::unordered_map<int, int> getParentMap(std::unordered_set<int> &pidlist) {
   std::unordered_map<int, int> pidmap;
   auto num_pids = pidlist.size();
   pid_t children[num_pids];
 
   // Find children for each pid, and mark that pid as their parent
-  for (auto& pid : pidlist) {
+  for (auto &pid : pidlist) {
     int num_children = proc_listchildpids(pid, children, sizeof(children));
     for (int i = 0; i < num_children; ++i) {
       pidmap[children[i]] = pid;
@@ -100,6 +102,27 @@ std::string getProcPath(int pid) {
   return std::string(path);
 }
 
+struct proc_cred {
+  struct {
+    uid_t uid;
+    gid_t gid;
+  } real, effective;
+};
+
+bool getProcCred(int pid, proc_cred &cred) {
+  struct proc_bsdshortinfo bsdinfo;
+
+  if (proc_pidinfo(pid, PROC_PIDT_SHORTBSDINFO, 0, &bsdinfo, sizeof bsdinfo) !=
+      -1) {
+    cred.real.uid = bsdinfo.pbsi_ruid;
+    cred.real.gid = bsdinfo.pbsi_ruid;
+    cred.effective.uid = bsdinfo.pbsi_uid;
+    cred.effective.gid = bsdinfo.pbsi_gid;
+    return true;
+  }
+  return false;
+}
+
 // Get the max args space
 int genMaxArgs() {
   int mib[2] = {CTL_KERN, KERN_ARGMAX};
@@ -107,24 +130,27 @@ int genMaxArgs() {
   int argmax = 0;
   size_t size = sizeof(argmax);
   if (sysctl(mib, 2, &argmax, &size, NULL, 0) == -1) {
-    LOG(ERROR) << "An error occured retrieving the max arg size";
+    LOG(ERROR) << "An error occurred retrieving the max arg size";
     return 0;
   }
 
   return argmax;
 }
 
-std::unordered_map<std::string, std::string> getProcEnv(int pid, size_t argmax) {
-  std::unordered_map<std::string, std::string> env;
+std::vector<std::string> getProcRawArgs(int pid, size_t argmax) {
   std::vector<std::string> args;
+  uid_t euid = geteuid();
 
   char procargs[argmax];
-  const char* cp = procargs;
+  const char *cp = procargs;
   int mib[3] = {CTL_KERN, KERN_PROCARGS2, pid};
 
   if (sysctl(mib, 3, &procargs, &argmax, NULL, 0) == -1) {
-    LOG(ERROR) << "An error occured retrieving the env for " << pid;
-    return env;
+    if (euid == 0) {
+      LOG(ERROR) << "An error occurred retrieving the env for " << pid;
+    }
+
+    return args;
   }
 
   // Here we make the assertion that we are interested in all non-empty strings
@@ -136,6 +162,13 @@ std::unordered_map<std::string, std::string> getProcEnv(int pid, size_t argmax) 
     }
     cp += args.back().size() + 1;
   } while (cp < procargs + argmax);
+  return args;
+}
+
+std::unordered_map<std::string, std::string> getProcEnv(int pid,
+                                                        size_t argmax) {
+  std::unordered_map<std::string, std::string> env;
+  auto args = getProcRawArgs(pid, argmax);
 
   // Since we know that all envs will have an = sign and are at the end of the
   // list, we iterate from the end forward until we stop seeing = signs.
@@ -155,6 +188,34 @@ std::unordered_map<std::string, std::string> getProcEnv(int pid, size_t argmax) 
   return env;
 }
 
+std::vector<std::string> getProcArgs(int pid, size_t argmax) {
+  auto raw_args = getProcRawArgs(pid, argmax);
+  std::vector<std::string> args;
+  bool collect = false;
+
+  // Iterate from the back until we stop seing environment vars
+  // Then start pushing args (in reverse order) onto a vector.
+  // We trim the args of leading/trailing whitespace to make
+  // analysis easier.
+  for (auto itr=raw_args.rbegin(); itr < raw_args.rend(); ++itr) {
+    if (collect) {
+      std::string arg = *itr;
+      boost::algorithm::trim(arg);
+      args.push_back(arg);
+    } else {
+      size_t idx = itr->find_first_of("=");
+      if (idx == std::string::npos) {
+        collect = true;
+      }
+    }
+  }
+
+  // We pushed them on backwards, so we need to fix that.
+  std::reverse(args.begin(), args.end());
+
+  return args;
+}
+
 struct OpenFile {
   std::string local_path;
   std::string file_type;
@@ -169,16 +230,17 @@ std::vector<OpenFile> getOpenFiles(int pid) {
   int sz;
   int bufsize = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, 0, 0);
   if (bufsize == -1) {
-    LOG(ERROR) << "An error occured retrieving the open files " << pid;
+    LOG(ERROR) << "An error occurred retrieving the open files " << pid;
     return open_files;
   }
 
   proc_fdinfo fd_infos[bufsize / PROC_PIDLISTFD_SIZE];
 
-  int num_fds = proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fd_infos, sizeof(fd_infos));
+  int num_fds =
+      proc_pidinfo(pid, PROC_PIDLISTFDS, 0, fd_infos, sizeof(fd_infos));
   struct vnode_fdinfowithpath vnode_info;
   struct socket_fdinfo socket_info;
-  void * la = NULL, * fa = NULL;
+  void *la = NULL, *fa = NULL;
   int lp, fp, v4mapped;
   char buf[1024];
 
@@ -186,90 +248,117 @@ std::vector<OpenFile> getOpenFiles(int pid) {
     OpenFile row;
     auto fd_info = fd_infos[i];
     switch (fd_info.proc_fdtype) {
-      case PROX_FDTYPE_VNODE:
-        row.file_type = "file";
-        sz = proc_pidfdinfo(pid, fd_info.proc_fd, PROC_PIDFDVNODEPATHINFO, &vnode_info, PROC_PIDFDVNODEPATHINFO_SIZE);
-        if (sz > 0) {
-          row.local_path = std::string(vnode_info.pvip.vip_path);
-        }
-        break;
-      case PROX_FDTYPE_SOCKET:
-        // Its a socket
-        sz = proc_pidfdinfo(pid, fd_info.proc_fd, PROC_PIDFDSOCKETINFO, &socket_info, PROC_PIDFDSOCKETINFO_SIZE);
+    case PROX_FDTYPE_VNODE:
+      row.file_type = "file";
+      sz = proc_pidfdinfo(pid,
+                          fd_info.proc_fd,
+                          PROC_PIDFDVNODEPATHINFO,
+                          &vnode_info,
+                          PROC_PIDFDVNODEPATHINFO_SIZE);
+      if (sz > 0) {
+        row.local_path = std::string(vnode_info.pvip.vip_path);
+      }
+      break;
+    case PROX_FDTYPE_SOCKET:
+      // Its a socket
+      sz = proc_pidfdinfo(pid,
+                          fd_info.proc_fd,
+                          PROC_PIDFDSOCKETINFO,
+                          &socket_info,
+                          PROC_PIDFDSOCKETINFO_SIZE);
 
-        if (sz > 0) {
-          switch (socket_info.psi.soi_family) {
-            case AF_INET:
-              if (socket_info.psi.soi_kind == SOCKINFO_TCP) {
-                row.file_type = "TCP";
+      if (sz > 0) {
+        switch (socket_info.psi.soi_family) {
+        case AF_INET:
+          if (socket_info.psi.soi_kind == SOCKINFO_TCP) {
+            row.file_type = "TCP";
 
-                la = &socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_laddr.ina_46.i46a_addr4;
-                lp = ntohs(socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport);
-                fa = &socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_faddr.ina_46.i46a_addr4;
-                fp = ntohs(socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_fport);
+            la = &socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_laddr.ina_46
+                      .i46a_addr4;
+            lp = ntohs(socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport);
+            fa = &socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_faddr.ina_46
+                      .i46a_addr4;
+            fp = ntohs(socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_fport);
 
-              } else {
-                row.file_type = "UDP";
-                la = &socket_info.psi.soi_proto.pri_in.insi_laddr.ina_46.i46a_addr4;
-                lp = ntohs(socket_info.psi.soi_proto.pri_in.insi_lport);
-                fa = &socket_info.psi.soi_proto.pri_in.insi_faddr.ina_46.i46a_addr4;
-                fp = ntohs(socket_info.psi.soi_proto.pri_in.insi_fport);
-              }
-
-              row.local_host = std::string(inet_ntop(AF_INET, &(((struct sockaddr_in *)la)->sin_addr), buf, sizeof(buf)));
-              row.local_port  = boost::lexical_cast<std::string>(lp);
-              row.remote_host = std::string(inet_ntop(AF_INET, &(((struct sockaddr_in *)fa)->sin_addr), buf, sizeof(buf)));
-              row.remote_port = boost::lexical_cast<std::string>(fp);
-
-              break;
-            case AF_INET6:
-              if (socket_info.psi.soi_kind == SOCKINFO_TCP) {
-                row.file_type = "TCP6";
-
-                la = &socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_laddr.ina_6;
-                lp = ntohs(socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport);
-                fa = &socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_faddr.ina_6;
-                fp = ntohs(socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_fport);
-
-                if ((socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_vflag & INI_IPV4) != 0) {
-                  v4mapped = 1;
-                }
-              } else {
-                row.file_type = "UDP6";
-
-                la = &socket_info.psi.soi_proto.pri_in.insi_laddr.ina_6;
-                lp = ntohs(socket_info.psi.soi_proto.pri_in.insi_lport);
-                fa = &socket_info.psi.soi_proto.pri_in.insi_faddr.ina_6;
-                fp = ntohs(socket_info.psi.soi_proto.pri_in.insi_fport);
-
-                if ((socket_info.psi.soi_proto.pri_in.insi_vflag & INI_IPV4) != 0) {
-                  v4mapped = 1;
-                }
-              }
-
-              if (v4mapped) {
-                // Adjust IPv4 addresses mapped in IPv6 addresses.
-                if (la) {
-                  la = (struct sockaddr *)IPv6_2_IPv4(la);
-                }
-                if (fa) {
-                  fa = (struct sockaddr *)IPv6_2_IPv4(fa);
-                }
-              }
-
-              row.local_host = std::string(inet_ntop(AF_INET6, &(((struct sockaddr_in6 *)la)->sin6_addr), buf, sizeof(buf)));
-              row.local_port  = boost::lexical_cast<std::string>(lp);
-              row.remote_host = std::string(inet_ntop(AF_INET6, &(((struct sockaddr_in6 *)fa)->sin6_addr), buf, sizeof(buf)));
-              row.remote_port = boost::lexical_cast<std::string>(fp);
-              break;
-            default:
-              break;
+          } else {
+            row.file_type = "UDP";
+            la = &socket_info.psi.soi_proto.pri_in.insi_laddr.ina_46.i46a_addr4;
+            lp = ntohs(socket_info.psi.soi_proto.pri_in.insi_lport);
+            fa = &socket_info.psi.soi_proto.pri_in.insi_faddr.ina_46.i46a_addr4;
+            fp = ntohs(socket_info.psi.soi_proto.pri_in.insi_fport);
           }
-        }
 
-        break;
-      default:
-        break;
+          row.local_host =
+              std::string(inet_ntop(AF_INET,
+                                    &(((struct sockaddr_in *)la)->sin_addr),
+                                    buf,
+                                    sizeof(buf)));
+          row.local_port = boost::lexical_cast<std::string>(lp);
+          row.remote_host =
+              std::string(inet_ntop(AF_INET,
+                                    &(((struct sockaddr_in *)fa)->sin_addr),
+                                    buf,
+                                    sizeof(buf)));
+          row.remote_port = boost::lexical_cast<std::string>(fp);
+
+          break;
+        case AF_INET6:
+          if (socket_info.psi.soi_kind == SOCKINFO_TCP) {
+            row.file_type = "TCP6";
+
+            la = &socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_laddr.ina_6;
+            lp = ntohs(socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_lport);
+            fa = &socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_faddr.ina_6;
+            fp = ntohs(socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_fport);
+
+            if ((socket_info.psi.soi_proto.pri_tcp.tcpsi_ini.insi_vflag &
+                 INI_IPV4) != 0) {
+              v4mapped = 1;
+            }
+          } else {
+            row.file_type = "UDP6";
+
+            la = &socket_info.psi.soi_proto.pri_in.insi_laddr.ina_6;
+            lp = ntohs(socket_info.psi.soi_proto.pri_in.insi_lport);
+            fa = &socket_info.psi.soi_proto.pri_in.insi_faddr.ina_6;
+            fp = ntohs(socket_info.psi.soi_proto.pri_in.insi_fport);
+
+            if ((socket_info.psi.soi_proto.pri_in.insi_vflag & INI_IPV4) != 0) {
+              v4mapped = 1;
+            }
+          }
+
+          if (v4mapped) {
+            // Adjust IPv4 addresses mapped in IPv6 addresses.
+            if (la) {
+              la = (struct sockaddr *)IPv6_2_IPv4(la);
+            }
+            if (fa) {
+              fa = (struct sockaddr *)IPv6_2_IPv4(fa);
+            }
+          }
+
+          row.local_host =
+              std::string(inet_ntop(AF_INET6,
+                                    &(((struct sockaddr_in6 *)la)->sin6_addr),
+                                    buf,
+                                    sizeof(buf)));
+          row.local_port = boost::lexical_cast<std::string>(lp);
+          row.remote_host =
+              std::string(inet_ntop(AF_INET6,
+                                    &(((struct sockaddr_in6 *)fa)->sin6_addr),
+                                    buf,
+                                    sizeof(buf)));
+          row.remote_port = boost::lexical_cast<std::string>(fp);
+          break;
+        default:
+          break;
+        }
+      }
+
+      break;
+    default:
+      break;
     }
 
     open_files.push_back(row);
@@ -281,12 +370,22 @@ QueryData genProcesses() {
   QueryData results;
   auto pidlist = getProcList();
   auto parent_pid = getParentMap(pidlist);
+  int argmax = genMaxArgs();
 
-  for (auto& pid : pidlist) {
+  for (auto &pid : pidlist) {
     Row r;
     r["pid"] = boost::lexical_cast<std::string>(pid);
     r["name"] = getProcName(pid);
     r["path"] = getProcPath(pid);
+    r["cmdline"] = boost::algorithm::join(getProcArgs(pid, argmax), " ");
+
+    proc_cred cred;
+    if (getProcCred(pid, cred)) {
+      r["uid"] = boost::lexical_cast<std::string>(cred.real.uid);
+      r["gid"] = boost::lexical_cast<std::string>(cred.real.gid);
+      r["euid"] = boost::lexical_cast<std::string>(cred.effective.uid);
+      r["egid"] = boost::lexical_cast<std::string>(cred.effective.gid);
+    }
 
     const auto parent_it = parent_pid.find(pid);
     if (parent_it != parent_pid.end()) {
@@ -305,7 +404,7 @@ QueryData genProcesses() {
     // systems usage and time information
     struct rusage_info_v2 rusage_info_data;
     int rusage_status = proc_pid_rusage(
-        pid, RUSAGE_INFO_V2, (rusage_info_t*)&rusage_info_data);
+        pid, RUSAGE_INFO_V2, (rusage_info_t *)&rusage_info_data);
     // proc_pid_rusage returns -1 if it was unable to gather information
     if (rusage_status == 0) {
       // size information
@@ -337,7 +436,7 @@ QueryData genProcessEnvs() {
   auto pidlist = getProcList();
   int argmax = genMaxArgs();
 
-  for (auto& pid : pidlist) {
+  for (auto &pid : pidlist) {
     auto env = getProcEnv(pid, argmax);
     for (auto env_itr = env.begin(); env_itr != env.end(); ++env_itr) {
       Row r;
@@ -359,9 +458,9 @@ QueryData genProcessOpenFiles() {
   QueryData results;
   auto pidlist = getProcList();
 
-  for (auto& pid : pidlist) {
+  for (auto &pid : pidlist) {
     auto open_files = getOpenFiles(pid);
-    for (auto& open_file : open_files) {
+    for (auto &open_file : open_files) {
       Row r;
 
       r["pid"] = boost::lexical_cast<std::string>(pid);

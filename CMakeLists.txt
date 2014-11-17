@@ -6,22 +6,47 @@ if(APPLE)
   set(OS_WHOLELINK_PRE "-Wl,-all_load")
   set(OS_WHOLELINK_POST "")
 else()
-  if(EXISTS "/etc/redhat-release")
-    set(CENTOS TRUE)
-  else()
-    set(UBUNTU TRUE)
-  endif()
-
   set(OS_COMPILE_FLAGS "-std=c++11")
+  if("${CMAKE_BUILD_TYPE}" STREQUAL "Debug")
+    set(OS_COMPILE_FLAGS "${OS_COMPILE_FLAGS} -g -DDEBUG")
+  endif()
   set(OS_WHOLELINK_PRE "-Wl,-whole-archive")
   set(OS_WHOLELINK_POST "-Wl,-no-whole-archive")
 endif()
 
+# Use osquery language to set platform/os
+execute_process(
+  COMMAND ${CMAKE_SOURCE_DIR}/tools/provision.sh get_platform
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  OUTPUT_VARIABLE PLATFORM
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+string(REPLACE "." "_" PLATFORM "${PLATFORM}")
+string(TOUPPER "${PLATFORM}" PLATFORM)
+list(GET PLATFORM 0 OSQUERY_BUILD_OS)
+list(GET PLATFORM 1 OSQUERY_BUILD_DISTRO)
+
+# Make sure deps were built before compiling
+execute_process(
+  COMMAND ${CMAKE_SOURCE_DIR}/tools/provision.sh check ${CMAKE_BINARY_DIR}
+  WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+  OUTPUT_VARIABLE OSQUERY_DEPS_MESSAGE
+  RESULT_VARIABLE OSQUERY_DEPS_CHECK
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+)
+
+if(OSQUERY_DEPS_CHECK)
+  string(ASCII 27 Esc)
+  message(WARNING "${Esc}[31m${OSQUERY_DEPS_MESSAGE}${Esc}[m")
+endif()
+
 if(APPLE)
   message("-- Building for OS X")
-elseif(UBUNTU)
+elseif(OSQUERY_BUILD_OS STREQUAL "UBUNTU")
+  set(UBUNTU TRUE)
   message("-- Building for Ubuntu")
-elseif(CENTOS)
+elseif(OSQUERY_BUILD_OS STREQUAL "CENTOS")
+  set(CENTOS TRUE)
   message("-- Building for CentOS")
 endif()
 
@@ -38,13 +63,11 @@ SET(CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/CMake" ${CMAKE_MODULE_PATH})
 FIND_PACKAGE(Gtest REQUIRED)
 FIND_PACKAGE(Sqlite3 REQUIRED)
 FIND_PACKAGE(BZip2 REQUIRED)
-FIND_PACKAGE(Boost 1.55.0 REQUIRED)
 FIND_PACKAGE(Glog REQUIRED)
 FIND_PACKAGE(Gflags REQUIRED)
 FIND_PACKAGE(Thrift 0.9.1 REQUIRED)
 FIND_PACKAGE(Readline REQUIRED)
 FIND_PACKAGE(OpenSSL REQUIRED)
-FIND_PACKAGE(Threads REQUIRED)
 FIND_PACKAGE(Snappy REQUIRED)
 FIND_PACKAGE(RocksDB REQUIRED)
 FIND_PACKAGE(Crypto REQUIRED)
